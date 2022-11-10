@@ -170,16 +170,19 @@ final class Bootstrap {
         Settings settings = environment.settings();
 
         try {
+            // 加载modules目录，生成相应的Controller管理器，每个module都对应一个守护线程
             spawner.spawnNativeControllers(environment, true);
         } catch (IOException e) {
             throw new BootstrapException(e);
         }
 
         try {
+            // 验证本机的一些配置？
             environment.validateNativesConfig(); // temporary directories are important for JNA
         } catch (IOException e) {
             throw new BootstrapException(e);
         }
+        // 初始化Nativ额，memoryLock设置，等等，system_lock_setting
         initializeNatives(
             environment.tmpFile(),
             BootstrapSettings.MEMORY_LOCK_SETTING.get(settings),
@@ -357,11 +360,13 @@ final class Bootstrap {
         throws BootstrapException, NodeValidationException, UserException {
         // force the class initializer for BootstrapInfo to run before
         // the security manager is installed
+        // 在 securityManager 之前强制初始化 BootStrapInfo，因为这里面包含了一些系统变量，所以需要先强制初始化一下
         BootstrapInfo.init();
-
+        // 初始化 keepAlive 线程
         INSTANCE = new Bootstrap();
-
+        // 加载安全设置，是否存在密码等
         final SecureSettings keystore = loadSecureSettings(initialEnv);
+        //读取配置文件，elasticsearch.yml
         final Environment environment = createEnvironment(pidFile, keystore, initialEnv.settings(), initialEnv.configFile());
 
         LogConfigurator.setNodeName(Node.NODE_NAME_SETTING.get(environment.settings()));
@@ -370,6 +375,7 @@ final class Bootstrap {
         } catch (IOException e) {
             throw new BootstrapException(e);
         }
+        // 校验 javaVersion,deprecate 过期配置项提醒
         if (JavaVersion.current().compareTo(JavaVersion.parse("11")) < 0) {
             final String message = String.format(
                 Locale.ROOT,
@@ -408,7 +414,7 @@ final class Bootstrap {
                 }
                 closeSystOut();
             }
-
+            // 检查 lucene
             // fail if somebody replaced the lucene jars
             checkLucene();
 
@@ -430,7 +436,7 @@ final class Bootstrap {
                     );
                 }
             }
-
+            // 这一步 setup 相对较重要
             INSTANCE.setup(true, environment);
 
             try {
@@ -439,7 +445,7 @@ final class Bootstrap {
             } catch (IOException e) {
                 throw new BootstrapException(e);
             }
-
+            // 启动当前节点以及 keepAlive 线程
             INSTANCE.start();
 
             // We don't close stderr if `--quiet` is passed, because that

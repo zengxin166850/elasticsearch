@@ -59,7 +59,9 @@ class Elasticsearch extends EnvironmentAwareCommand {
      * Main entry point for starting elasticsearch
      */
     public static void main(final String[] args) throws Exception {
+        // DNS缓存配置
         bootstrapSecurityProperties();
+        // 安全管理器相关(预填充？不是很理解)
         org.elasticsearch.bootstrap.Security.prepopulateSecurityCaller();
 
         /*
@@ -122,11 +124,19 @@ class Elasticsearch extends EnvironmentAwareCommand {
     }
 
     static int main(final String[] args, final Elasticsearch elasticsearch, final Terminal terminal) throws Exception {
+        /**
+         * es的启动脚本都继承了Command类，调用 xx.cmd或这在linux下执行 ./xxx时，实际是启动的
+         *  对应子类的execute方法。（beforeMain.run--->execute()）
+         */
         return elasticsearch.main(args, terminal);
     }
 
     @Override
     protected void execute(Terminal terminal, OptionSet options, Environment env) throws UserException {
+        /**
+         * 检查启动参数 -d pidFile等等，
+         * 然后检查jdk版本、lucene版本、过期配置项提示...
+         */
         if (options.nonOptionArguments().isEmpty() == false) {
             throw new UserException(ExitCodes.USAGE, "Positional arguments not allowed, found " + options.nonOptionArguments());
         }

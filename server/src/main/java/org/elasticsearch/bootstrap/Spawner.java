@@ -75,6 +75,8 @@ final class Spawner implements Closeable {
                 );
                 throw new IllegalArgumentException(message);
             }
+            // 生成本机控制器。。。本质上 modules与plugins是相同的，只不过modules为内直插件
+            // plugins为可选插件，plugin-descriptor.properties可以明显的看出这一点。
             final Process process = spawnNativeController(spawnPath, environment.tmpFile(), inheritIo);
             processes.add(process);
         }

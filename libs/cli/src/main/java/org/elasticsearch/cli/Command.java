@@ -52,6 +52,7 @@ public abstract class Command implements Closeable {
 
     /** Parses options for this command from args and executes it. */
     public final int main(String[] args, Terminal terminal) throws Exception {
+        // 添加钩子，收不现场
         if (addShutdownHook()) {
 
             shutdownHookThread = new Thread(() -> {

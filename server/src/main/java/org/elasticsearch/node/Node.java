@@ -403,7 +403,7 @@ public class Node implements Closeable {
                     initialEnvironment.pluginsFile()
                 );
             }
-
+            // 前置都是一些检查，可以忽略，从此处开始初始化一些模块，
             this.pluginsService = new PluginsService(
                 tmpSettings,
                 initialEnvironment.configFile(),

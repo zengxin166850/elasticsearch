@@ -135,6 +135,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
         }
 
         Set<Bundle> seenBundles = new LinkedHashSet<>();
+        // 读取modules 文件夹
         List<PluginDescriptor> modulesList = new ArrayList<>();
         // load modules
         if (modulesDirectory != null) {
@@ -148,7 +149,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
                 throw new IllegalStateException("Unable to initialize modules", ex);
             }
         }
-
+        //读取plugins文件夹
         // now, find all the ones that are in plugins/
         if (pluginsDirectory != null) {
             try {
@@ -166,7 +167,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
                 throw new IllegalStateException("Unable to initialize plugins", ex);
             }
         }
-
+        // load 所有的 modules 和 plugins
         List<Tuple<PluginDescriptor, Plugin>> loaded = loadBundles(seenBundles);
         pluginsLoaded.addAll(loaded);
 
@@ -525,6 +526,12 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
         List<Tuple<PluginDescriptor, Plugin>> plugins = new ArrayList<>();
         Map<String, Tuple<Plugin, ClassLoader>> loaded = new HashMap<>();
         Map<String, Set<URL>> transitiveUrls = new HashMap<>();
+        /**
+         * 这里有个sort操作，例如 x-pack系列的module其实都包含 x-pack-core、lang-painless这些更基础的bundles
+         * 但目前还未看懂为什么要这样处理，后续跟进，isolated类型和 bootstrap类型的插件在这里有所区别。
+         * 内置的 modules 貌似都是 isolated沙盒类型，待确认，
+         * bootstrap类型的插件根据注释来看，是表示其jar会被添加到JVM的引导类路径中。（所以这代表了什么意思？）
+         */
         List<Bundle> sortedBundles = sortBundles(bundles);
         for (Bundle bundle : sortedBundles) {
             if (bundle.plugin.getType() != PluginType.BOOTSTRAP) {
