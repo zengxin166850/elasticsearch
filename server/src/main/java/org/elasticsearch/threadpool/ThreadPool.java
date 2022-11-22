@@ -193,7 +193,9 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
         final int allocatedProcessors = EsExecutors.allocatedProcessors(settings);
         final int halfProcMaxAt5 = halfAllocatedProcessorsMaxFive(allocatedProcessors);
         final int halfProcMaxAt10 = halfAllocatedProcessorsMaxTen(allocatedProcessors);
+        // 512，和 4*allocatedProcessors取最小值
         final int genericThreadPoolMax = boundedBy(4 * allocatedProcessors, 128, 512);
+        // 可扩容的 4 ---> genericThreadPoolMax
         builders.put(
             Names.GENERIC,
             new ScalingExecutorBuilder(Names.GENERIC, 4, genericThreadPoolMax, TimeValue.timeValueSeconds(30), false)

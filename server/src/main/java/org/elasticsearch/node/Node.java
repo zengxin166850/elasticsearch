@@ -413,19 +413,46 @@ public class Node implements Closeable {
             );
             final Settings settings = pluginsService.updatedSettings();
 
+            /**
+             * 通过map取出所有插件的 roles，但实际上只有少数几个插件覆写了getRoles方法，所以 Plugin::getRoles
+             * 返回的 set 中大部分是空集合，然后通过 flatmap重新组成一个新的 set流，空值就被去掉了，
+             * 这里默认配置下得到的additionalRoles包含了以下三个：
+             * votingOnlyNode、Transform、machineLearning
+             *
+              */
             final Set<DiscoveryNodeRole> additionalRoles = pluginsService.filterPlugins(Plugin.class)
                 .stream()
                 .map(Plugin::getRoles)
                 .flatMap(Set::stream)
                 .collect(Collectors.toSet());
+            /**
+             * DiscoveryNodeRole.BUILT_IN_ROLES 为默认的角色，目前有 9 种
+             * setAdditionalRoles将上述三个角色加入到该集合中
+             */
+
             DiscoveryNode.setAdditionalRoles(additionalRoles);
 
             /*
              * Create the environment based on the finalized view of the settings. This is to ensure that components get the same setting
              * values, no matter they ask for them from.
              */
+            /**
+             * 将 settings 转化为 Environment
+             */
             this.environment = new Environment(settings, initialEnvironment.configFile(), Node.NODE_LOCAL_STORAGE_SETTING.get(settings));
             Environment.assertEquivalent(initialEnvironment, this.environment);
+            /**
+             * 根据 Environment 构造 NodeEnvironment,这俩的区别在于：Environment只是基础的yml配置文件读取出来的环境，
+             * 而 NodeEnvironment中对数据的data目录进行了加锁控制（完成nodeEnvironment初始化后会释放，finally 中）
+             * node.node.max_local_storage_nodes 这个配置项为该节点共享 path.data 目录的节点个数，默认为 1。
+             * NodeEnvironment在初始化时，会根据此配置项，创建对应的数据目录，并加锁。例如此值为 2，
+             * 那么 path.data 目录下就会创建 nodes/0 和 nodes/1 两个文件夹，分别存放数据。（推荐是设置为1，默认也为1）。
+             * 当该值设为1，并且有复数个ES启动时，就会因获取不到锁而失败，提示增加此值，
+             * 或者当其它进程占用了此目录，导致该目录不可写时，也会导致 NodeEnvironment 初始化失败。
+             * TODO 这里面对于 nodeMetadata的加载有两种情况，一个是初始化，一种是集群重启，读取_state目录下的信息~
+             *
+             * 注意：nodeEnvironment中有了唯一的 nodeId
+             */
             nodeEnvironment = new NodeEnvironment(tmpSettings, environment);
             final Set<String> roleNames = DiscoveryNode.getRolesFromSettings(settings)
                 .stream()
@@ -440,6 +467,7 @@ public class Node implements Closeable {
             );
             {
                 // are there any legacy settings in use?
+                // 检查是否有使用旧的节点role设置。
                 final List<Setting<Boolean>> maybeLegacyRoleSettings = Collections.unmodifiableList(
                     DiscoveryNode.getPossibleRoles()
                         .stream()
@@ -463,17 +491,36 @@ public class Node implements Closeable {
             }
             resourcesToClose.add(nodeEnvironment);
             localNodeFactory = new LocalNodeFactory(settings, nodeEnvironment.nodeId());
-
+            /**
+             * executorBuilder 返回的是线程池构造器？
+             * 跟到深层可发现，继承了此方法的插件只有少数几个，大部分都返回 EmptyList;以Security plugin为例：
+             * param1 ----> fixedExecutorBuilder/核心线程数为1，队列1000
+             * param2 ----> fixedExecutorBuilder、核心线程数为 setting分配的processor数量+1 /2
+             *
+             */
             final List<ExecutorBuilder<?>> executorBuilders = pluginsService.getExecutorBuilders(settings);
-
+            /**
+             * 线程池与nodeName有关，以及settings中的 allocatedProcessors 相关
+             * write-->10000
+             * get --->1000
+             * analyze ---> 16
+             * search --> autoQueue-->allocatedProcessors*3 /2    +1
+             * flush、refresh、snapshot等等。线程池全都在此处进行初始化
+             */
             final ThreadPool threadPool = new ThreadPool(settings, executorBuilders.toArray(new ExecutorBuilder<?>[0]));
             resourcesToClose.add(() -> ThreadPool.terminate(threadPool, 10, TimeUnit.SECONDS));
+            /**
+             * 资源监听器。此类会默认每隔60s调用checkAndNotify，检查绑定的其他服务
+             *    resource.reload.enabled-->开关
+             *    resource.reload.intervals--->间隔，默认60s
+             */
             final ResourceWatcherService resourceWatcherService = new ResourceWatcherService(settings, threadPool);
             resourcesToClose.add(resourceWatcherService);
             // adds the context to the DeprecationLogger so that it does not need to be injected everywhere
             HeaderWarning.setThreadContext(threadPool.getThreadContext());
             resourcesToClose.add(() -> HeaderWarning.removeThreadContext(threadPool.getThreadContext()));
 
+            // 其余节点角色相关的配置信息、以及plugin配置信息
             final List<Setting<?>> additionalSettings = new ArrayList<>();
             // register the node.data, node.ingest, node.master, node.remote_cluster_client settings here so we can mark them private
             additionalSettings.add(NODE_DATA_SETTING);
@@ -485,41 +532,51 @@ public class Node implements Closeable {
             for (final ExecutorBuilder<?> builder : threadPool.builders()) {
                 additionalSettings.addAll(builder.getRegisteredSettings());
             }
+
+            // 新建 NodeClient
             client = new NodeClient(settings, threadPool);
 
+            // 从 pluginService中过滤出ScriptModule、、、analysisModule、settingsModule等等。。
             final ScriptModule scriptModule = new ScriptModule(settings, pluginsService.filterPlugins(ScriptPlugin.class));
             final ScriptService scriptService = newScriptService(settings, scriptModule.engines, scriptModule.contexts);
+            // TODO 分词插件后续走断点详细解读。ik就是在此处 被加载到 AnalysisModule中的
             AnalysisModule analysisModule = new AnalysisModule(this.environment, pluginsService.filterPlugins(AnalysisPlugin.class));
             // this is as early as we can validate settings at this point. we already pass them to ScriptModule as well as ThreadPool
             // so we might be late here already
-
+            // 此处是我们能最早更新设置的地方？目前settings已经传递给了 ScriptModule和 threadPool，所以有可能已经迟了。
             final Set<SettingUpgrader<?>> settingsUpgraders = pluginsService.filterPlugins(Plugin.class)
                 .stream()
                 .map(Plugin::getSettingUpgraders)
                 .flatMap(List::stream)
                 .collect(Collectors.toSet());
-
+            // settingModule 负责设置persistent和transient 的设置更新？
             final SettingsModule settingsModule = new SettingsModule(
                 settings,
                 additionalSettings,
                 additionalSettingsFilter,
                 settingsUpgraders
             );
+            // 是因为script已经设置过setting的原因么，所以此处注册了集群配置更新的监听器
             scriptModule.registerClusterSettingsListeners(scriptService, settingsModule.getClusterSettings());
             final NetworkService networkService = new NetworkService(
                 getCustomNameResolvers(pluginsService.filterPlugins(DiscoveryPlugin.class))
             );
-
+            // clusterService 中包含了MasterService和ClusterApplierService
             List<ClusterPlugin> clusterPlugins = pluginsService.filterPlugins(ClusterPlugin.class);
             final ClusterService clusterService = new ClusterService(settings, settingsModule.getClusterSettings(), threadPool);
             clusterService.addStateApplier(scriptService);
             resourcesToClose.add(clusterService);
+            // 哪些属于consistent设置？
             final Set<Setting<?>> consistentSettings = settingsModule.getConsistentSettings();
             if (consistentSettings.isEmpty() == false) {
                 clusterService.addLocalNodeMasterListener(
                     new ConsistentSettingsService(settings, clusterService, consistentSettings).newHashPublisher()
                 );
             }
+            /**
+             * ingest 初始化，所以想要增加 processors 的话，第一点就是要继承 IngestPlugin，进行扩展。
+             * pluginsService.filterPlugins(IngestPlugin.class) 取所有的 processors
+             */
             final IngestService ingestService = new IngestService(
                 clusterService,
                 threadPool,
@@ -530,7 +587,9 @@ public class Node implements Closeable {
                 client
             );
             final SetOnce<RepositoriesService> repositoriesServiceReference = new SetOnce<>();
+            // 提供给其它 Service 获取集群信息的接口，getClusterInfo、addListener
             final ClusterInfoService clusterInfoService = newClusterInfoService(settings, clusterService, threadPool, client);
+            // usage,有点类似功能使用日志？
             final UsageService usageService = new UsageService();
 
             SearchModule searchModule = new SearchModule(settings, false, pluginsService.filterPlugins(SearchPlugin.class));
@@ -606,6 +665,7 @@ public class Node implements Closeable {
                 plugin.setCircuitBreaker(breaker);
             });
             resourcesToClose.add(circuitBreakerService);
+            //
             modules.add(new GatewayModule());
 
             PageCacheRecycler pageCacheRecycler = createPageCacheRecycler(settings);
@@ -653,6 +713,9 @@ public class Node implements Closeable {
                 .flatMap(m -> m.entrySet().stream())
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
+            /**
+             * 主节点增加了监听器。
+             */
             if (DiscoveryNode.isMasterNode(settings)) {
                 clusterService.addListener(new SystemIndexManager(systemIndices, client));
             }
@@ -688,7 +751,9 @@ public class Node implements Closeable {
             );
 
             final AliasValidator aliasValidator = new AliasValidator();
-
+            /**
+             * 分片限制器
+             */
             final ShardLimitValidator shardLimitValidator = new ShardLimitValidator(settings, clusterService);
             final MetadataCreateIndexService metadataCreateIndexService = new MetadataCreateIndexService(
                 settings,
@@ -786,10 +851,19 @@ public class Node implements Closeable {
                 settingsModule.getIndexScopedSettings(),
                 scriptService
             );
+            /**
+             * 主节点还增加了集群元数据的更新监听器。
+             */
             if (DiscoveryNode.isMasterNode(settings)) {
                 clusterService.addListener(new SystemIndexMetadataUpgradeService(systemIndices, clusterService));
             }
+            /**
+             * 索引模板更新service
+             */
             new TemplateUpgradeService(client, clusterService, threadPool, indexTemplateMetadataUpgraders);
+            /**
+             * transport注册
+             */
             final Transport transport = networkModule.getTransportSupplier().get();
             Set<String> taskHeaders = Stream.concat(
                 pluginsService.filterPlugins(ActionPlugin.class).stream().flatMap(p -> p.getTaskHeaders().stream()),
@@ -804,6 +878,9 @@ public class Node implements Closeable {
                 settingsModule.getClusterSettings(),
                 taskHeaders
             );
+            /**
+             * gateway
+             */
             final GatewayMetaState gatewayMetaState = new GatewayMetaState();
             final ResponseCollectorService responseCollectorService = new ResponseCollectorService(clusterService);
             final SearchTransportService searchTransportService = new SearchTransportService(
@@ -813,7 +890,9 @@ public class Node implements Closeable {
             );
             final HttpServerTransport httpServerTransport = newHttpTransport(networkModule);
             final IndexingPressure indexingLimits = new IndexingPressure(settings);
-
+            /**
+             * Recovery
+             */
             final RecoverySettings recoverySettings = new RecoverySettings(settings, settingsModule.getClusterSettings());
             RepositoriesModule repositoriesModule = new RepositoriesModule(
                 this.environment,
@@ -1165,9 +1244,11 @@ public class Node implements Closeable {
         clusterService.setNodeConnectionsService(nodeConnectionsService);
 
         injector.getInstance(GatewayService.class).start();
+        // 1.节点调用 Discovery 的 publish 方法，将信息发布出去。
         Discovery discovery = injector.getInstance(Discovery.class);
-        clusterService.getMasterService().setClusterStatePublisher(discovery::publish);
 
+        clusterService.getMasterService().setClusterStatePublisher(discovery::publish);
+        // 2.publish后，开始启动 transsportService，
         // Start the transport service now so the publish address will be added to the local disco node in ClusterService
         TransportService transportService = injector.getInstance(TransportService.class);
         transportService.getTaskManager().setTaskResultsService(injector.getInstance(TaskResultsService.class));
@@ -1177,7 +1258,7 @@ public class Node implements Closeable {
         assert transportService.getLocalNode().equals(localNodeFactory.getNode())
             : "transportService has a different local node than the factory provided";
         injector.getInstance(PeerRecoverySourceService.class).start();
-
+        // gateway 启动
         // Load (and maybe upgrade) the metadata stored on disk
         final GatewayMetaState gatewayMetaState = injector.getInstance(GatewayMetaState.class);
         gatewayMetaState.start(
@@ -1272,7 +1353,7 @@ public class Node implements Closeable {
         }
 
         logger.info("started");
-
+        // 集群启动后运行的，onNodeStared 。
         pluginsService.filterPlugins(ClusterPlugin.class).forEach(ClusterPlugin::onNodeStarted);
 
         return this;

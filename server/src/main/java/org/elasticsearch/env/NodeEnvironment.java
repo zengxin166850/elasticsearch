@@ -352,7 +352,14 @@ public final class NodeEnvironment implements Closeable {
 
                 ensureNoShardData(dataPaths);
             }
-
+            // 从settings中加载 Node的元数据信息，_state目录中
+            /**
+             *  current_term -> 4 当前选举轮次，
+             *  last_accepted_version -> 74 最后一次accept的版本号
+             *  node_id -> --GiFWxVRLeC1mjsHbmVlA 节点id
+             *  node_version -> 7170799 节点版本号
+             *  oldest_index_version -> 7170799 最老的索引版本号（后续会根据这个有提示，比如6.8.23支持的最老只能是5.6.x）
+             */
             this.nodeMetadata = loadNodeMetadata(settings, logger, dataPaths);
             success = true;
         } finally {

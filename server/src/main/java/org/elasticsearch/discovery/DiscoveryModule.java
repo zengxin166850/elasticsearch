@@ -172,6 +172,7 @@ public class DiscoveryModule {
         }
 
         if (ZEN2_DISCOVERY_TYPE.equals(discoveryType) || SINGLE_NODE_DISCOVERY_TYPE.equals(discoveryType)) {
+            // 初始化 discovery 为 coordinator  节点
             discovery = new Coordinator(
                 NODE_NAME_SETTING.get(settings),
                 settings,

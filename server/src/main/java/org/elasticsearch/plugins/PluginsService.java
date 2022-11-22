@@ -170,11 +170,13 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
         // load 所有的 modules 和 plugins
         List<Tuple<PluginDescriptor, Plugin>> loaded = loadBundles(seenBundles);
         pluginsLoaded.addAll(loaded);
-
+        // info里是将plugins和modules分开存储的
+        //而 plugins中则是没有区分的
         this.info = new PluginsAndModules(pluginsList, modulesList);
         this.plugins = Collections.unmodifiableList(pluginsLoaded);
 
         // Checking expected plugins
+        //TODO 这里的 mandatory是做什么，没太看懂，强制插件？是指插件依赖关系缺失么
         List<String> mandatoryPlugins = MANDATORY_SETTING.get(settings);
         if (mandatoryPlugins.isEmpty() == false) {
             Set<String> missingPlugins = new HashSet<>();
@@ -196,6 +198,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
 
         // we don't log jars in lib/ we really shouldn't log modules,
         // but for now: just be transparent so we can debug any potential issues
+        // 在控制台中输出 loaded module....loaded plugin
         logPluginInfo(info.getModuleInfos(), "module", logger);
         logPluginInfo(info.getPluginInfos(), "plugin", logger);
     }
@@ -214,6 +217,7 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
     public Settings updatedSettings() {
         Map<String, String> foundSettings = new HashMap<>();
         final Map<String, String> features = new TreeMap<>();
+
         final Settings.Builder builder = Settings.builder();
         for (Tuple<PluginDescriptor, Plugin> plugin : plugins) {
             Settings settings = plugin.v2().additionalSettings();
@@ -527,10 +531,11 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
         Map<String, Tuple<Plugin, ClassLoader>> loaded = new HashMap<>();
         Map<String, Set<URL>> transitiveUrls = new HashMap<>();
         /**
-         * 这里有个sort操作，例如 x-pack系列的module其实都包含 x-pack-core、lang-painless这些更基础的bundles
+         * TODO 这里有个sort操作，例如 x-pack系列的module其实都包含 x-pack-core、lang-painless这些更基础的bundles
          * 但目前还未看懂为什么要这样处理，后续跟进，isolated类型和 bootstrap类型的插件在这里有所区别。
          * 内置的 modules 貌似都是 isolated沙盒类型，待确认，
          * bootstrap类型的插件根据注释来看，是表示其jar会被添加到JVM的引导类路径中。（所以这代表了什么意思？）
+         * 另外对于jarHell的处理也非常值得深究，但目前先放弃，不然代码整体逻辑就看不下去了
          */
         List<Bundle> sortedBundles = sortBundles(bundles);
         for (Bundle bundle : sortedBundles) {
