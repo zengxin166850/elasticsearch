@@ -149,6 +149,11 @@ public abstract class PeerFinder {
             activatedAtMillis = transportService.getThreadPool().relativeTimeInMillis();
             this.lastAcceptedNodes = lastAcceptedNodes;
             leader = Optional.empty();
+            /**
+             * 此处会尝试去连接 peersByAddress 中的地址，也即 127.0.0.1:9300 这样的 ip，并创建一个定时器，每隔一秒 establishConnection,
+             * handleWakeUp 一直在检测连接状态，除非节点 shutdown，而如果有断连的情况，handleWakeUp会返回 true。
+             * 所以需要调用 onFoundPeersUpdated，重新检测存货节点数是否达到 Quorum
+             */
             handleWakeUp(); // return value discarded: there are no known peers, so none can be disconnected
         }
 

@@ -164,7 +164,7 @@ public class ClusterBootstrapService {
                 bootstrappingPermitted.set(false);
                 return;
             }
-
+            // 判断达到选举人数，（半数以上），开始选举 doBootStrap-->setInitialConfiguration-->startElection
             if (nodesMatchingRequirements.size() * 2 > bootstrapRequirements.size()) {
                 startBootstrap(nodesMatchingRequirements, unsatisfiedRequirements);
             }

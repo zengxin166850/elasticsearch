@@ -948,6 +948,7 @@ public class Node implements Closeable {
             );
             clusterInfoService.addListener(diskThresholdMonitor::onNewInfo);
 
+            // 构建disCoveryModule的同时，new当前节点为 coordinator
             final DiscoveryModule discoveryModule = new DiscoveryModule(
                 settings,
                 threadPool,
@@ -1244,7 +1245,7 @@ public class Node implements Closeable {
         clusterService.setNodeConnectionsService(nodeConnectionsService);
 
         injector.getInstance(GatewayService.class).start();
-        // 1.节点调用 Discovery 的 publish 方法，将信息发布出去。
+        // 1.节点在此处设置好 Discovery 的 publish 方法，start后，选举成功时才会调用publish
         Discovery discovery = injector.getInstance(Discovery.class);
 
         clusterService.getMasterService().setClusterStatePublisher(discovery::publish);
@@ -1305,6 +1306,7 @@ public class Node implements Closeable {
         assert clusterService.localNode().equals(localNodeFactory.getNode())
             : "clusterService has a different local node than the factory provided";
         transportService.acceptIncomingRequests();
+        // 关键！开始初始化节点join流程，选举开始
         discovery.startInitialJoin();
         final TimeValue initialStateTimeout = DiscoverySettings.INITIAL_STATE_TIMEOUT_SETTING.get(settings());
         configureNodeAndClusterIdStateListener(clusterService);

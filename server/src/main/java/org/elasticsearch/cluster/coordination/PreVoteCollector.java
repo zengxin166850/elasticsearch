@@ -153,6 +153,7 @@ public class PreVoteCollector {
         void start(final Iterable<DiscoveryNode> broadcastNodes) {
             assert StreamSupport.stream(broadcastNodes.spliterator(), false).noneMatch(Coordinator::isZen1Node) : broadcastNodes;
             logger.debug("{} requesting pre-votes from {}", this, broadcastNodes);
+            // 发送 preVote 请求，
             broadcastNodes.forEach(
                 n -> transportService.sendRequest(
                     n,
@@ -195,14 +196,15 @@ public class PreVoteCollector {
             }
 
             updateMaxTermSeen.accept(response.getCurrentTerm());
-
+            // 处理 preVote 的响应消息,要求是自己（候选人）的 term 应该更大，否则的话，自己不应该发起选举，
+            // 或者term相同，但自己的版本号应该 高于或等于 响应节点。
             if (response.getLastAcceptedTerm() > clusterState.term()
                 || (response.getLastAcceptedTerm() == clusterState.term()
                     && response.getLastAcceptedVersion() > clusterState.getVersionOrMetadataVersion())) {
                 logger.debug("{} ignoring {} from {} as it is fresher", this, response, sender);
                 return;
             }
-
+            // 存入 preVotesReceived
             preVotesReceived.put(sender, response);
 
             // create a fake VoteCollection based on the pre-votes and check if there is an election quorum
@@ -221,7 +223,7 @@ public class PreVoteCollector {
                     )
                 )
             );
-
+            // 判断是否响应达到半数以上，这一步是防止网络分区导致的 term无限增大。
             if (electionStrategy.isElectionQuorum(
                 clusterState.nodes().getLocalNode(),
                 localPreVoteResponse.getCurrentTerm(),
@@ -241,6 +243,7 @@ public class PreVoteCollector {
             }
 
             logger.debug("{} added {} from {}, starting election", this, response, sender);
+            // preVote环节结束，开始选举！
             startElection.run();
         }
 

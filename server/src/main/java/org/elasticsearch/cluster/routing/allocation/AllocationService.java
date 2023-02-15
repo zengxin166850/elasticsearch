@@ -61,6 +61,11 @@ import static org.elasticsearch.cluster.routing.UnassignedInfo.INDEX_DELAYED_NOD
  * for shard allocation. This class also manages new nodes joining the cluster
  * and rerouting of shards.
  */
+
+/**
+ * AllocationService，通过AllocationDeciders来决定选择哪个节点，进行分片分配。
+ * 同时，当新节点加入时，触发的 rerouting 也由此类来完成
+ */
 public class AllocationService {
 
     private static final Logger logger = LogManager.getLogger(AllocationService.class);

@@ -169,6 +169,18 @@ public class ElectionSchedulerFactory {
 
             final long thisAttempt = attempt.getAndIncrement();
             // to overflow here would take over a million years of failed election attempts, so we won't worry about that:
+
+            /**
+             * cluster.election.initial_timeout；默认 100ms，可配置：1ms-10s
+             * cluster.election.back_off_time；默认100ms，可配置：1ms-10s
+             * cluster.election.max_timeout; 超时时间，不能小于 initial_timeout ，默认10s，可配置：200ms-300s
+             * cluster.election.duration 选举周期，默认500ms，可配置：1ms-300s
+             * 也就是说，按照默认配置来的话，会在 (0,initial_timeout] 取一个 random 值，进行第一次选举，
+             * 后续如果存在失败的情况，下一轮选举将会增加延迟上限，每次增加一个 back_off的时长，
+             * 即第二次为 (0,200ms]的随机延迟，第三次为300ms，直到随机的范围增加到 max_timeout 10s为止。
+             * 当然，每一轮选举开始后，只会持续 cluster.election.duration 指定的周期时长，即默认的500ms。
+             *
+             */
             final long maxDelayMillis = Math.min(maxTimeout.millis(), initialTimeout.millis() + thisAttempt * backoffTime.millis());
             final long delayMillis = toPositiveLongAtMost(random.nextLong(), maxDelayMillis) + gracePeriod.millis();
             final Runnable runnable = new AbstractRunnable() {

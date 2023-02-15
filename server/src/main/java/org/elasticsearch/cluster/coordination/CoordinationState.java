@@ -279,6 +279,7 @@ public class CoordinationState {
 
         boolean added = joinVotes.addJoinVote(join);
         boolean prevElectionWon = electionWon;
+        // 判断是否达到半数以上。
         electionWon = isElectionQuorum(joinVotes);
         assert prevElectionWon == false || electionWon : // we cannot go from won to not won
             "locaNode= " + localNode + ", join=" + join + ", joinVotes=" + joinVotes;

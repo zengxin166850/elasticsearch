@@ -209,6 +209,7 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
             nodeHealthService
         );
         this.persistedStateSupplier = persistedStateSupplier;
+        // cluster.no_master_block  此配置项用于判断集群中没有活跃master时，阻止哪些操作
         this.noMasterBlockService = new NoMasterBlockService(settings, clusterSettings);
         this.lastKnownLeader = Optional.empty();
         this.lastJoin = Optional.empty();
@@ -216,6 +217,7 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
         this.publishTimeout = PUBLISH_TIMEOUT_SETTING.get(settings);
         this.publishInfoTimeout = PUBLISH_INFO_TIMEOUT_SETTING.get(settings);
         this.random = random;
+        // 初始化选举定时器工厂、pre投票收集器
         this.electionSchedulerFactory = new ElectionSchedulerFactory(settings, random, transportService.getThreadPool());
         this.preVoteCollector = new PreVoteCollector(
             transportService,
@@ -469,6 +471,10 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
         }
     }
 
+    /**
+     * 更新 maxTerm
+     * @param term 选举轮次
+     */
     private void updateMaxTermSeen(final long term) {
         synchronized (mutex) {
             maxTermSeen = Math.max(maxTermSeen, term);
@@ -492,18 +498,22 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
         }
     }
 
+    // preVote结束后，开始 election，加锁，仅在节点处于 Candidate 情况下进行
     private void startElection() {
         synchronized (mutex) {
             // The preVoteCollector is only active while we are candidate, but it does not call this method with synchronisation, so we have
             // to check our mode again here.
             if (mode == Mode.CANDIDATE) {
+                // 再次判断是否有资格选举为master
                 if (localNodeMayWinElection(getLastAcceptedState()) == false) {
                     logger.trace("skip election as local node may not win it: {}", getLastAcceptedState().coordinationMetadata());
                     return;
                 }
-
+                // 开始构造 startJoinRequest，在 currMaxTerm 基础上 +1
+                // joinRequest包含两个信息，当前节点，以及term号
                 final StartJoinRequest startJoinRequest = new StartJoinRequest(getLocalNode(), Math.max(getCurrentTerm(), maxTermSeen) + 1);
                 logger.debug("starting election with {}", startJoinRequest);
+                // 循环节点列表，发送 joinRequest 请求
                 getDiscoveredNodes().forEach(node -> {
                     if (isZen1Node(node) == false) {
                         joinHelper.sendStartJoinRequest(startJoinRequest, node);
@@ -725,7 +735,7 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
             mode,
             lastKnownLeader
         );
-
+        // 启动时 ，startInitialJoin会调用此方法，以及重新开始新一轮选举后，原 master 也会调用此方法
         if (mode != Mode.CANDIDATE) {
             final Mode prevMode = mode;
             mode = Mode.CANDIDATE;
@@ -746,11 +756,11 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
             followersChecker.clearCurrentNodes();
             followersChecker.updateFastResponseState(getCurrentTerm(), mode);
             lagDetector.clearTrackedNodes();
-
+            // 如果节点之前的状态为 Master， 清除相关信息
             if (prevMode == Mode.LEADER) {
                 cleanMasterService();
             }
-
+            // 给集群状态上锁，no_master_block!
             if (applierState.nodes().getMasterNodeId() != null) {
                 applierState = clusterStateWithNoMasterBlock(applierState);
                 clusterApplier.onNewClusterState("becoming candidate: " + method, () -> applierState, ActionListener.wrap(() -> {}));
@@ -936,6 +946,7 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
 
     @Override
     public void startInitialJoin() {
+        // startInitialJoin！！！！
         synchronized (mutex) {
             becomeCandidate("startInitialJoin");
         }
@@ -1482,11 +1493,13 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
                     expectedVotes.addVote(Coordinator.this.getLocalNode());
                     final boolean foundQuorum = coordinationState.get().isElectionQuorum(expectedVotes);
 
+                    // 判断是否达到开始选举的条件
                     if (foundQuorum) {
                         if (electionScheduler == null) {
                             startElectionScheduler();
                         }
                     } else {
+                        // 不满足的话，关闭 preVoting 环节，和选举定时器，避免无意义的 term 增加
                         closePrevotingAndElectionScheduler();
                     }
                 }
@@ -1498,19 +1511,25 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
 
     private void startElectionScheduler() {
         assert electionScheduler == null : electionScheduler;
-
+        // node.master 为 false 的话不参与选举
         if (getLocalNode().isMasterNode() == false) {
             return;
         }
 
         final TimeValue gracePeriod = TimeValue.ZERO;
+        //选举定时器，每隔一段时间调用 runnable方法
         electionScheduler = electionSchedulerFactory.startElectionScheduler(gracePeriod, new Runnable() {
             @Override
             public void run() {
                 synchronized (mutex) {
                     if (mode == Mode.CANDIDATE) {
+                        /**
+                         * 取集群中最近的集群状态，由于 clusterState 只能通过 masterNode 进行修改，每当出现更新的时候，
+                         * 需要master 调用 discovery的 publish方法，将变更发布给 follower，（仅修改部分）
+                         * 对于新加入的节点，则同步全量数据
+                         */
                         final ClusterState lastAcceptedState = coordinationState.get().getLastAcceptedState();
-
+                        //?如何判断当前节点能否货的选举胜利 LastCommittedConfiguration
                         if (localNodeMayWinElection(lastAcceptedState) == false) {
                             logger.trace("skip prevoting as local node may not win election: {}", lastAcceptedState.coordinationMetadata());
                             return;
@@ -1525,10 +1544,12 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
                         if (prevotingRound != null) {
                             prevotingRound.close();
                         }
+                        //过滤掉版本号小于 7，
+                        //并且 node.attr.zen1为false的节点，（默认为false）
                         final List<DiscoveryNode> discoveredNodes = getDiscoveredNodes().stream()
                             .filter(n -> isZen1Node(n) == false)
                             .collect(Collectors.toList());
-
+                        // 开始 preVoting 环节
                         prevotingRound = preVoteCollector.start(lastAcceptedState, discoveredNodes);
                     }
                 }
